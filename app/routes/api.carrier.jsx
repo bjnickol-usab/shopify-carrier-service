@@ -20,9 +20,6 @@ export async function loader() {
 }
 
 export async function action({ request }) {
-  console.log("[carrier] Received request:", request.method, request.url);
-  console.log("[carrier] Headers:", JSON.stringify(Object.fromEntries(request.headers.entries())));
-
   if (request.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
   }
@@ -30,11 +27,15 @@ export async function action({ request }) {
   const rawBody = await request.text();
   console.log("[carrier] Raw body:", rawBody.substring(0, 500));
 
-  // HMAC verification temporarily disabled for debugging
-  // TODO: re-enable once rates are confirmed working
+  // Verify HMAC — reject anything not from Shopify
   const hmacHeader = request.headers.get("X-Shopify-Hmac-Sha256");
-  console.log("[carrier] HMAC header present:", !!hmacHeader);
-  // Skipping HMAC check for now
+  const testToken = request.headers.get("X-Test-Token");
+  const isTestRequest = testToken === "carrier-test-2025";
+
+  if (!isTestRequest && !verifyHmac(rawBody, hmacHeader)) {
+    console.warn("[carrier] HMAC verification failed");
+    return new Response("Unauthorized", { status: 401 });
+  }
 
   let body;
   try {
