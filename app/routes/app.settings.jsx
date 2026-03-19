@@ -21,7 +21,7 @@ export async function loader({ request }) {
 
 export async function action({ request }) {
   try {
-    const { session } = await authenticate.admin(request);
+    const { session, admin } = await authenticate.admin(request);
     const shopDomain = session.shop;
     const formData = await request.formData();
     const intent = formData.get("intent");
@@ -31,31 +31,21 @@ export async function action({ request }) {
       const serviceName = formData.get("service_name") || "Custom Shipping Rates";
 
       // Use REST API — more reliable than GraphQL for carrier service creation
-      const settings = await getAppSettings(shopDomain);
-      const response = await fetch(
-        `https://${shopDomain}/admin/api/2025-07/carrier_services.json`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Shopify-Access-Token": session.accessToken,
+      const response = await admin.rest.post({
+        path: "carrier_services",
+        data: {
+          carrier_service: {
+            name: serviceName,
+            callback_url: callbackUrl,
+            service_discovery: true,
           },
-          body: JSON.stringify({
-            carrier_service: {
-              name: serviceName,
-              callback_url: callbackUrl,
-              service_discovery: true,
-            },
-          }),
-        }
-      );
+        },
+      });
 
-      const data = await response.json();
+      const data = response.body;
 
-      if (!response.ok) {
-        const errMsg = data.errors
-          ? JSON.stringify(data.errors)
-          : `HTTP ${response.status}`;
+      if (!data?.carrier_service) {
+        const errMsg = data?.errors ? JSON.stringify(data.errors) : "Failed to create carrier service.";
         return json({ error: errMsg }, { status: 400 });
       }
 
@@ -78,18 +68,15 @@ export async function action({ request }) {
         return json({ error: "No carrier service registered." }, { status: 400 });
       }
 
-      const response = await fetch(
-        `https://${shopDomain}/admin/api/2025-07/carrier_services/${settings.carrier_service_id}.json`,
-        {
-          method: "DELETE",
-          headers: {
-            "X-Shopify-Access-Token": session.accessToken,
-          },
+      try {
+        await admin.rest.delete({
+          path: `carrier_services/${settings.carrier_service_id}`,
+        });
+      } catch (deleteErr) {
+        // 404 is fine — already deleted
+        if (!deleteErr?.message?.includes("404")) {
+          return json({ error: `Failed to delete: ${deleteErr.message}` }, { status: 400 });
         }
-      );
-
-      if (!response.ok && response.status !== 404) {
-        return json({ error: `Failed to delete carrier service: HTTP ${response.status}` }, { status: 400 });
       }
 
       await updateAppSettings(shopDomain, {
