@@ -15,7 +15,7 @@ const CARRIER_SERVICE_CREATE = `
         id
         name
         callbackUrl
-        active
+
       }
       userErrors {
         field
