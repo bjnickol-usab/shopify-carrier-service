@@ -1,5 +1,5 @@
 name = "shopify-carrier-service-app"
-client_id = "YOUR_SHOPIFY_CLIENT_ID"
+client_id = "Y2e7e7e759c3ec32cd9a6e683857b2247"
 application_url = "https://shopify-carrier-service-usab.vercel.app/app"
 embedded = true
 
