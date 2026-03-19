@@ -6,7 +6,7 @@ import {
   Toast, Frame, Divider, Badge, InlineStack,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server.js";
-import { getAppSettings, updateAppSettings } from "../db.server.js";
+import { getAppSettings, updateAppSettings, sessionStorage } from "../db.server.js";
 
 export async function loader({ request }) {
   try {
@@ -21,7 +21,7 @@ export async function loader({ request }) {
 
 export async function action({ request }) {
   try {
-    const { session, admin } = await authenticate.admin(request);
+    const { session } = await authenticate.admin(request);
     const shopDomain = session.shop;
     const formData = await request.formData();
     const intent = formData.get("intent");
@@ -30,26 +30,43 @@ export async function action({ request }) {
       const callbackUrl = `${process.env.SHOPIFY_APP_URL}/api/carrier?shop=${shopDomain}`;
       const serviceName = formData.get("service_name") || "Custom Shipping Rates";
 
-      // Use REST API — more reliable than GraphQL for carrier service creation
-      const response = await admin.rest.post({
-        path: "carrier_services",
-        data: {
-          carrier_service: {
-            name: serviceName,
-            callback_url: callbackUrl,
-            service_discovery: true,
+      // Get access token from session storage
+      const sessions = await sessionStorage.findSessionsByShop(shopDomain);
+      const offlineSession = sessions.find((s) => !s.isOnline) || sessions[0];
+      if (!offlineSession?.accessToken) {
+        return json({ error: "No access token found. Try reinstalling the app." }, { status: 401 });
+      }
+
+      const response = await fetch(
+        `https://${shopDomain}/admin/api/2025-07/carrier_services.json`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": offlineSession.accessToken,
           },
-        },
-      });
+          body: JSON.stringify({
+            carrier_service: {
+              name: serviceName,
+              callback_url: callbackUrl,
+              service_discovery: true,
+            },
+          }),
+        }
+      );
 
-      const data = response.body;
+      const data = await response.json();
+      console.log("[carrier register] response:", response.status, JSON.stringify(data));
 
-      if (!data?.carrier_service) {
-        const errMsg = data?.errors ? JSON.stringify(data.errors) : "Failed to create carrier service.";
+      if (!response.ok) {
+        const errMsg = data?.errors ? JSON.stringify(data.errors) : `HTTP ${response.status}`;
         return json({ error: errMsg }, { status: 400 });
       }
 
       const service = data.carrier_service;
+      if (!service) {
+        return json({ error: "No carrier_service in response." }, { status: 500 });
+      }
       if (!service) {
         return json({ error: "Failed to create carrier service." }, { status: 500 });
       }
@@ -68,15 +85,22 @@ export async function action({ request }) {
         return json({ error: "No carrier service registered." }, { status: 400 });
       }
 
-      try {
-        await admin.rest.delete({
-          path: `carrier_services/${settings.carrier_service_id}`,
-        });
-      } catch (deleteErr) {
-        // 404 is fine — already deleted
-        if (!deleteErr?.message?.includes("404")) {
-          return json({ error: `Failed to delete: ${deleteErr.message}` }, { status: 400 });
+      const sessions = await sessionStorage.findSessionsByShop(shopDomain);
+      const offlineSession = sessions.find((s) => !s.isOnline) || sessions[0];
+      if (!offlineSession?.accessToken) {
+        return json({ error: "No access token found." }, { status: 401 });
+      }
+
+      const delResponse = await fetch(
+        `https://${shopDomain}/admin/api/2025-07/carrier_services/${settings.carrier_service_id}.json`,
+        {
+          method: "DELETE",
+          headers: { "X-Shopify-Access-Token": offlineSession.accessToken },
         }
+      );
+
+      if (!delResponse.ok && delResponse.status !== 404) {
+        return json({ error: `Failed to delete carrier service: HTTP ${delResponse.status}` }, { status: 400 });
       }
 
       await updateAppSettings(shopDomain, {
