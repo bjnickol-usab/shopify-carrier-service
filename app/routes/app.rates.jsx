@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { json } from "@remix-run/node";
-import { useLoaderData, useSubmit } from "@remix-run/react";
+import { useLoaderData, useSubmit, useActionData } from "@remix-run/react";
 import {
   Page, Layout, Card, BlockStack, InlineStack, Text, Button,
   DataTable, Badge, Modal, FormLayout, TextField, Select,
@@ -88,6 +88,14 @@ export default function RatesPage() {
   const [toastActive, setToastActive] = useState(false);
 
   function showToast(msg) { setToastMsg(msg); setToastActive(true); }
+
+  const actionData = useActionData();
+  if (actionData?.success && !toastActive && !modalOpen) {
+    showToast(actionData.rate ? "Rate saved" : "Done");
+  }
+  if (actionData?.error && !toastActive) {
+    showToast(`Error: ${actionData.error}`);
+  }
   function setField(key) { return (val) => setForm((f) => ({ ...f, [key]: val })); }
 
   function openAdd() {
@@ -117,7 +125,6 @@ export default function RatesPage() {
     Object.entries(form).forEach(([k, v]) => fd.append(k, String(v)));
     submit(fd, { method: "post" });
     setModalOpen(false);
-    showToast(editingRate ? "Rate updated" : "Rate created");
   }
 
   function handleDelete(id) { setDeletingId(id); setDeleteModalOpen(true); }

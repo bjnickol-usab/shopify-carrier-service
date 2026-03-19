@@ -159,6 +159,7 @@ export async function getShippingRates(shopDomain) {
 }
 
 export async function upsertShippingRate(shopDomain, rate) {
+  console.log("[upsertShippingRate] shop:", shopDomain, "rate:", JSON.stringify(rate));
   const { data, error } = await supabase
     .from("shipping_rates")
     .upsert(
@@ -178,6 +179,7 @@ export async function upsertShippingRate(shopDomain, rate) {
     )
     .select()
     .single();
+  console.log("[upsertShippingRate] result data:", JSON.stringify(data), "error:", JSON.stringify(error));
   if (error) throw error;
   return data;
 }
