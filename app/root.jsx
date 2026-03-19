@@ -4,11 +4,24 @@ import {
   Outlet,
   Scripts,
   ScrollRestoration,
+  useLoaderData,
   useRouteError,
-  isRouteErrorResponse,
 } from "@remix-run/react";
+import { boundary } from "@shopify/shopify-app-remix/server";
+import { AppProvider } from "@shopify/shopify-app-remix/react";
+import { NavMenu } from "@shopify/app-bridge-react";
+import polarisStyles from "@shopify/polaris/build/esm/styles.css?url";
+import { json } from "@remix-run/node";
+
+export const links = () => [{ rel: "stylesheet", href: polarisStyles }];
+
+export async function loader({ request }) {
+  return json({ apiKey: process.env.SHOPIFY_API_KEY || "" });
+}
 
 export default function App() {
+  const { apiKey } = useLoaderData();
+
   return (
     <html>
       <head>
@@ -23,7 +36,15 @@ export default function App() {
         <Links />
       </head>
       <body>
-        <Outlet />
+        <AppProvider isEmbeddedApp apiKey={apiKey}>
+          <NavMenu>
+            <a href="/app" rel="home">Dashboard</a>
+            <a href="/app/rates">Shipping Rates</a>
+            <a href="/app/surcharges">Surcharge Rules</a>
+            <a href="/app/settings">Settings</a>
+          </NavMenu>
+          <Outlet />
+        </AppProvider>
         <ScrollRestoration />
         <Scripts />
       </body>
@@ -32,22 +53,9 @@ export default function App() {
 }
 
 export function ErrorBoundary() {
-  const error = useRouteError();
-  return (
-    <html>
-      <head>
-        <title>Error</title>
-        <Meta />
-        <Links />
-      </head>
-      <body>
-        <h1>
-          {isRouteErrorResponse(error)
-            ? `${error.status} ${error.statusText}`
-            : "Application Error"}
-        </h1>
-        <Scripts />
-      </body>
-    </html>
-  );
+  return boundary.error(useRouteError());
 }
+
+export const headers = (headersArgs) => {
+  return boundary.headers(headersArgs);
+};
