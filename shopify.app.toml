@@ -1,0 +1,24 @@
+name = "shopify-carrier-service-app"
+client_id = "YOUR_SHOPIFY_CLIENT_ID"
+application_url = "https://shopify-carrier-service-usab.vercel.app/app"
+embedded = true
+
+[access_scopes]
+scopes = "read_products,write_products,read_shipping,write_shipping"
+
+[auth]
+redirect_urls = [
+  "https://shopify-carrier-service-usab.vercel.app/auth/callback",
+  "https://shopify-carrier-service-usab.vercel.app/auth/shopify/callback",
+  "https://shopify-carrier-service-usab.vercel.app/api/auth/callback"
+]
+
+[webhooks]
+api_version = "2025-07"
+
+  [[webhooks.subscriptions]]
+  topics = ["app/uninstalled"]
+  uri = "/webhooks/app-uninstalled"
+
+[pos]
+embedded = false
