@@ -1,41 +1,12 @@
 import { useState } from "react";
 import { json } from "@remix-run/node";
-import { useLoaderData, useFetcher, useSubmit } from "@remix-run/react";
+import { useLoaderData, useFetcher } from "@remix-run/react";
 import {
   Page, Layout, Card, BlockStack, Text, Button, Banner,
-  Select, Toast, Frame, Divider, Badge, InlineStack,
+  Toast, Frame, Divider, Badge, InlineStack,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server.js";
 import { getAppSettings, updateAppSettings } from "../db.server.js";
-
-const CARRIER_SERVICE_CREATE = `
-  mutation carrierServiceCreate($input: DeliveryCarrierServiceCreateInput!) {
-    carrierServiceCreate(input: $input) {
-      carrierService {
-        id
-        name
-        callbackUrl
-
-      }
-      userErrors {
-        field
-        message
-      }
-    }
-  }
-`;
-
-const CARRIER_SERVICE_DELETE = `
-  mutation carrierServiceDelete($id: ID!) {
-    carrierServiceDelete(id: $id) {
-      deletedId
-      userErrors {
-        field
-        message
-      }
-    }
-  }
-`;
 
 export async function loader({ request }) {
   try {
@@ -50,7 +21,7 @@ export async function loader({ request }) {
 
 export async function action({ request }) {
   try {
-    const { session, admin } = await authenticate.admin(request);
+    const { session } = await authenticate.admin(request);
     const shopDomain = session.shop;
     const formData = await request.formData();
     const intent = formData.get("intent");
@@ -59,33 +30,43 @@ export async function action({ request }) {
       const callbackUrl = `${process.env.SHOPIFY_APP_URL}/api/carrier?shop=${shopDomain}`;
       const serviceName = formData.get("service_name") || "Custom Shipping Rates";
 
-      const response = await admin.graphql(CARRIER_SERVICE_CREATE, {
-        variables: {
-          input: {
-            name: serviceName,
-            callbackUrl,
-            supportsServiceDiscovery: true,
+      // Use REST API — more reliable than GraphQL for carrier service creation
+      const settings = await getAppSettings(shopDomain);
+      const response = await fetch(
+        `https://${shopDomain}/admin/api/2025-07/carrier_services.json`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": session.accessToken,
           },
-        },
-      });
+          body: JSON.stringify({
+            carrier_service: {
+              name: serviceName,
+              callback_url: callbackUrl,
+              service_discovery: true,
+            },
+          }),
+        }
+      );
 
       const data = await response.json();
 
-      if (data.data?.carrierServiceCreate?.userErrors?.length > 0) {
-        return json({ error: data.data.carrierServiceCreate.userErrors[0].message }, { status: 400 });
+      if (!response.ok) {
+        const errMsg = data.errors
+          ? JSON.stringify(data.errors)
+          : `HTTP ${response.status}`;
+        return json({ error: errMsg }, { status: 400 });
       }
 
-      const service = data.data?.carrierServiceCreate?.carrierService;
+      const service = data.carrier_service;
       if (!service) {
         return json({ error: "Failed to create carrier service." }, { status: 500 });
       }
 
-      // Extract numeric ID from GID
-      const numericId = service.id.replace("gid://shopify/DeliveryCarrierService/", "");
-
       await updateAppSettings(shopDomain, {
-        carrier_service_id: parseInt(numericId),
-        carrier_service_name: serviceName,
+        carrier_service_id: service.id,
+        carrier_service_name: service.name,
       });
 
       return json({ success: true, service });
@@ -97,15 +78,18 @@ export async function action({ request }) {
         return json({ error: "No carrier service registered." }, { status: 400 });
       }
 
-      const gid = `gid://shopify/DeliveryCarrierService/${settings.carrier_service_id}`;
-      const response = await admin.graphql(CARRIER_SERVICE_DELETE, {
-        variables: { id: gid },
-      });
+      const response = await fetch(
+        `https://${shopDomain}/admin/api/2025-07/carrier_services/${settings.carrier_service_id}.json`,
+        {
+          method: "DELETE",
+          headers: {
+            "X-Shopify-Access-Token": session.accessToken,
+          },
+        }
+      );
 
-      const data = await response.json();
-
-      if (data.data?.carrierServiceDelete?.userErrors?.length > 0) {
-        return json({ error: data.data.carrierServiceDelete.userErrors[0].message }, { status: 400 });
+      if (!response.ok && response.status !== 404) {
+        return json({ error: `Failed to delete carrier service: HTTP ${response.status}` }, { status: 400 });
       }
 
       await updateAppSettings(shopDomain, {
@@ -134,7 +118,6 @@ export async function action({ request }) {
 export default function SettingsPage() {
   const { settings, shopDomain, appUrl } = useLoaderData();
   const fetcher = useFetcher();
-  const submit = useSubmit();
 
   const [serviceName, setServiceName] = useState(
     settings.carrier_service_name || "Custom Shipping Rates"
@@ -182,7 +165,6 @@ export default function SettingsPage() {
       <Page title="Settings" subtitle="Configure and manage your carrier service">
         <Layout>
 
-          {/* ── Carrier Registration ── */}
           <Layout.Section>
             <Card>
               <BlockStack gap="400">
@@ -191,7 +173,7 @@ export default function SettingsPage() {
                     <Text variant="headingMd" as="h2">Carrier Service Registration</Text>
                     <Text tone="subdued">
                       Register your app with Shopify so it receives checkout callbacks.
-                      This is required for your shipping rates to appear at checkout.
+                      Required before your shipping rates appear at checkout.
                     </Text>
                   </BlockStack>
                   <Badge tone={hasCarrier ? "success" : "warning"}>
@@ -210,19 +192,11 @@ export default function SettingsPage() {
                           Service name: {settings.carrier_service_name || fetcher.data?.service?.name}
                         </Text>
                         <Text tone="subdued" variant="bodySm">
-                          Callback URL: {appUrl}/api/carrier
+                          Callback URL: {appUrl}/api/carrier?shop={shopDomain}
                         </Text>
                       </BlockStack>
                     </Banner>
-                    <Text tone="subdued" variant="bodySm">
-                      To rename the service, unregister it and re-register with a new name.
-                    </Text>
-                    <Button
-                      tone="critical"
-                      variant="plain"
-                      onClick={handleUnregister}
-                      loading={isLoading}
-                    >
+                    <Button tone="critical" variant="plain" onClick={handleUnregister} loading={isLoading}>
                       Unregister Carrier Service
                     </Button>
                   </BlockStack>
@@ -235,7 +209,7 @@ export default function SettingsPage() {
                       </Text>
                     </Banner>
                     <BlockStack gap="200">
-                      <Text fontWeight="semibold">Service name shown to customers</Text>
+                      <Text fontWeight="semibold">Service name</Text>
                       <InlineStack gap="300" blockAlign="end">
                         <div style={{ flex: 1 }}>
                           <input
@@ -243,28 +217,16 @@ export default function SettingsPage() {
                             value={serviceName}
                             onChange={(e) => setServiceName(e.target.value)}
                             style={{
-                              width: "100%",
-                              padding: "8px 12px",
-                              border: "1px solid #c9cccf",
-                              borderRadius: "8px",
-                              fontSize: "14px",
+                              width: "100%", padding: "8px 12px",
+                              border: "1px solid #c9cccf", borderRadius: "8px", fontSize: "14px",
                             }}
                             placeholder="Custom Shipping Rates"
                           />
                         </div>
-                        <Button
-                          variant="primary"
-                          onClick={handleRegister}
-                          loading={isLoading}
-                          disabled={!serviceName.trim()}
-                        >
+                        <Button variant="primary" onClick={handleRegister} loading={isLoading} disabled={!serviceName.trim()}>
                           Register Carrier Service
                         </Button>
                       </InlineStack>
-                      <Text tone="subdued" variant="bodySm">
-                        This name may appear in Shopify's shipping settings. Your individual
-                        rate names (Standard, Expedited, etc.) are what customers see at checkout.
-                      </Text>
                     </BlockStack>
                   </BlockStack>
                 )}
@@ -272,37 +234,31 @@ export default function SettingsPage() {
             </Card>
           </Layout.Section>
 
-          {/* ── App Toggle ── */}
           <Layout.Section>
             <Card>
               <BlockStack gap="400">
                 <InlineStack align="space-between" blockAlign="center">
                   <BlockStack gap="100">
                     <Text variant="headingMd" as="h2">App Status</Text>
-                    <Text tone="subdued">
-                      Disable to stop returning rates at checkout without deleting your configuration.
-                    </Text>
+                    <Text tone="subdued">Disable to stop returning rates without deleting your configuration.</Text>
                   </BlockStack>
                   <Badge tone={settings.app_enabled ? "success" : "critical"}>
                     {settings.app_enabled ? "Enabled" : "Disabled"}
                   </Badge>
                 </InlineStack>
                 <Divider />
-                <InlineStack gap="300">
-                  <Button
-                    variant={settings.app_enabled ? "plain" : "primary"}
-                    tone={settings.app_enabled ? "critical" : undefined}
-                    onClick={() => handleToggle(!settings.app_enabled)}
-                    loading={isLoading}
-                  >
-                    {settings.app_enabled ? "Disable App" : "Enable App"}
-                  </Button>
-                </InlineStack>
+                <Button
+                  variant={settings.app_enabled ? "plain" : "primary"}
+                  tone={settings.app_enabled ? "critical" : undefined}
+                  onClick={() => handleToggle(!settings.app_enabled)}
+                  loading={isLoading}
+                >
+                  {settings.app_enabled ? "Disable App" : "Enable App"}
+                </Button>
               </BlockStack>
             </Card>
           </Layout.Section>
 
-          {/* ── Important Notes ── */}
           <Layout.Section>
             <Card>
               <BlockStack gap="400">
@@ -313,32 +269,25 @@ export default function SettingsPage() {
                     <Text fontWeight="semibold">Shopify Plan Requirement</Text>
                     <Text tone="subdued">
                       Carrier-calculated shipping requires Shopify Advanced plan or higher,
-                      or the carrier-calculated shipping add-on on lower plans. Without this,
-                      your carrier service will be registered but rates won't appear at checkout.
+                      or the carrier-calculated shipping add-on on lower plans.
                     </Text>
                   </BlockStack>
                   <BlockStack gap="100">
                     <Text fontWeight="semibold">Response Time</Text>
                     <Text tone="subdued">
-                      Shopify requires your callback to respond within 10 seconds. If your
-                      Vercel function is cold-starting, this can occasionally time out. The app
-                      is optimized to respond quickly with direct Supabase queries.
+                      Shopify requires your callback to respond within 10 seconds.
                     </Text>
                   </BlockStack>
                   <BlockStack gap="100">
                     <Text fontWeight="semibold">Rate Caching</Text>
                     <Text tone="subdued">
-                      Shopify caches carrier rates for up to 15 minutes per cart. Changes to
-                      your rates or rules may take up to 15 minutes to appear in active checkouts.
+                      Shopify caches carrier rates for up to 15 minutes per cart.
                     </Text>
                   </BlockStack>
                   <BlockStack gap="100">
                     <Text fontWeight="semibold">Callback URL</Text>
                     <Text variant="bodySm" fontWeight="semibold">
-                      {appUrl}/api/carrier
-                    </Text>
-                    <Text tone="subdued">
-                      This is the URL Shopify calls at checkout. It must remain publicly accessible.
+                      {appUrl}/api/carrier?shop={shopDomain}
                     </Text>
                   </BlockStack>
                 </BlockStack>
