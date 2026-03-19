@@ -1,39 +1,6 @@
 import crypto from "crypto";
 import { calculateShippingRates } from "../db.server.js";
 
-/**
- * Shopify Carrier Service Callback
- *
- * Shopify POSTs to this endpoint at checkout when requesting shipping rates.
- * Must respond within 10 seconds with an array of available rates.
- *
- * Request body shape from Shopify:
- * {
- *   rate: {
- *     origin: { ... },
- *     destination: { ... },
- *     items: [{ product_id, variant_id, quantity, grams, price, sku, ... }],
- *     currency: "USD",
- *     locale: "en"
- *   }
- * }
- *
- * Expected response:
- * {
- *   rates: [
- *     {
- *       service_name: "Standard Shipping",
- *       service_code: "standard",
- *       total_price: "800",   // in cents as a string
- *       currency: "USD",
- *       description: "...",   // optional
- *       min_delivery_date: "2025-01-15",  // optional
- *       max_delivery_date: "2025-01-17",  // optional
- *     }
- *   ]
- * }
- */
-
 function verifyHmac(rawBody, hmacHeader) {
   if (!hmacHeader) return false;
   const secret = process.env.SHOPIFY_API_SECRET || "";
@@ -53,19 +20,25 @@ export async function loader() {
 }
 
 export async function action({ request }) {
-  // Shopify only POSTs to this endpoint
   if (request.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
-  // Read raw body for HMAC verification
   const rawBody = await request.text();
 
-  // Verify HMAC — reject anything not from Shopify
+  // Allow requests with a test token to bypass HMAC for development testing
+  const testToken = request.headers.get("X-Test-Token");
+  const isTestRequest = testToken === (process.env.SHOPIFY_API_SECRET || "");
+
+  // Verify HMAC for real Shopify requests
   const hmacHeader = request.headers.get("X-Shopify-Hmac-Sha256");
-  if (!verifyHmac(rawBody, hmacHeader)) {
+  if (!isTestRequest && !verifyHmac(rawBody, hmacHeader)) {
     console.warn("[carrier] HMAC verification failed");
     return new Response("Unauthorized", { status: 401 });
+  }
+
+  if (isTestRequest) {
+    console.log("[carrier] Test request — HMAC bypassed");
   }
 
   let body;
@@ -83,10 +56,11 @@ export async function action({ request }) {
     });
   }
 
-  // Determine shop domain from the request
-  // Shopify sends the shop domain in the URL as a query param or in the origin
   const url = new URL(request.url);
-  const shopDomain = url.searchParams.get("shop") || request.headers.get("X-Shopify-Shop-Domain") || "";
+  const shopDomain =
+    url.searchParams.get("shop") ||
+    request.headers.get("X-Shopify-Shop-Domain") ||
+    "";
 
   if (!shopDomain) {
     console.error("[carrier] Could not determine shop domain");
@@ -100,7 +74,10 @@ export async function action({ request }) {
 
   try {
     const rates = await calculateShippingRates(shopDomain, cartItems);
-    console.log(`[carrier] ${shopDomain} → ${cartItems.length} items → ${rates.length} rates returned`);
+    console.log(
+      `[carrier] ${shopDomain} → ${cartItems.length} items → ${rates.length} rates returned`,
+      JSON.stringify(rates)
+    );
 
     return new Response(JSON.stringify({ rates }), {
       status: 200,
@@ -108,7 +85,6 @@ export async function action({ request }) {
     });
   } catch (err) {
     console.error("[carrier] Error calculating rates:", err);
-    // Return empty rates on error so checkout doesn't break
     return new Response(JSON.stringify({ rates: [] }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
