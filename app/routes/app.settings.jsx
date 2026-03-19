@@ -6,7 +6,38 @@ import {
   Toast, Frame, Divider, Badge, InlineStack,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server.js";
-import { getAppSettings, updateAppSettings, sessionStorage } from "../db.server.js";
+import { getAppSettings, updateAppSettings } from "../db.server.js";
+
+const CARRIER_CREATE = `
+  mutation {
+    carrierServiceCreate(input: {
+      name: "CARRIER_NAME_PLACEHOLDER",
+      callbackUrl: "CALLBACK_URL_PLACEHOLDER"
+    }) {
+      carrierService {
+        id
+        name
+        callbackUrl
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+const CARRIER_DELETE = `
+  mutation carrierServiceDelete($id: ID!) {
+    carrierServiceDelete(id: $id) {
+      deletedId
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
 
 export async function loader({ request }) {
   try {
@@ -21,7 +52,7 @@ export async function loader({ request }) {
 
 export async function action({ request }) {
   try {
-    const { session } = await authenticate.admin(request);
+    const { session, admin } = await authenticate.admin(request);
     const shopDomain = session.shop;
     const formData = await request.formData();
     const intent = formData.get("intent");
@@ -30,49 +61,48 @@ export async function action({ request }) {
       const callbackUrl = `${process.env.SHOPIFY_APP_URL}/api/carrier?shop=${shopDomain}`;
       const serviceName = formData.get("service_name") || "Custom Shipping Rates";
 
-      // Get access token from session storage
-      const sessions = await sessionStorage.findSessionsByShop(shopDomain);
-      const offlineSession = sessions.find((s) => !s.isOnline) || sessions[0];
-      if (!offlineSession?.accessToken) {
-        return json({ error: "No access token found. Try reinstalling the app." }, { status: 401 });
-      }
-
-      const response = await fetch(
-        `https://${shopDomain}/admin/api/2025-07/carrier_services.json`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Shopify-Access-Token": offlineSession.accessToken,
-          },
-          body: JSON.stringify({
-            carrier_service: {
-              name: serviceName,
-              callback_url: callbackUrl,
-              service_discovery: true,
-            },
-          }),
+      // Build mutation with literal values to avoid input type issues
+      const mutation = `
+        mutation {
+          carrierServiceCreate(input: {
+            name: "${serviceName.replace(/"/g, '\\"')}",
+            callbackUrl: "${callbackUrl}"
+          }) {
+            carrierService {
+              id
+              name
+              callbackUrl
+            }
+            userErrors {
+              field
+              message
+            }
+          }
         }
-      );
+      `;
 
+      const response = await admin.graphql(mutation);
       const data = await response.json();
-      console.log("[carrier register] response:", response.status, JSON.stringify(data));
 
-      if (!response.ok) {
-        const errMsg = data?.errors ? JSON.stringify(data.errors) : `HTTP ${response.status}`;
-        return json({ error: errMsg }, { status: 400 });
+      console.log("[carrier create] full response:", JSON.stringify(data));
+
+      if (data.errors) {
+        return json({ error: data.errors[0]?.message || "GraphQL error" }, { status: 400 });
       }
 
-      const service = data.carrier_service;
-      if (!service) {
-        return json({ error: "No carrier_service in response." }, { status: 500 });
+      if (data.data?.carrierServiceCreate?.userErrors?.length > 0) {
+        return json({ error: data.data.carrierServiceCreate.userErrors[0].message }, { status: 400 });
       }
+
+      const service = data.data?.carrierServiceCreate?.carrierService;
       if (!service) {
-        return json({ error: "Failed to create carrier service." }, { status: 500 });
+        return json({ error: "No carrier service returned — check Vercel logs." }, { status: 500 });
       }
+
+      const numericId = service.id.replace("gid://shopify/DeliveryCarrierService/", "");
 
       await updateAppSettings(shopDomain, {
-        carrier_service_id: service.id,
+        carrier_service_id: parseInt(numericId),
         carrier_service_name: service.name,
       });
 
@@ -85,22 +115,12 @@ export async function action({ request }) {
         return json({ error: "No carrier service registered." }, { status: 400 });
       }
 
-      const sessions = await sessionStorage.findSessionsByShop(shopDomain);
-      const offlineSession = sessions.find((s) => !s.isOnline) || sessions[0];
-      if (!offlineSession?.accessToken) {
-        return json({ error: "No access token found." }, { status: 401 });
-      }
+      const gid = `gid://shopify/DeliveryCarrierService/${settings.carrier_service_id}`;
+      const response = await admin.graphql(CARRIER_DELETE, { variables: { id: gid } });
+      const data = await response.json();
 
-      const delResponse = await fetch(
-        `https://${shopDomain}/admin/api/2025-07/carrier_services/${settings.carrier_service_id}.json`,
-        {
-          method: "DELETE",
-          headers: { "X-Shopify-Access-Token": offlineSession.accessToken },
-        }
-      );
-
-      if (!delResponse.ok && delResponse.status !== 404) {
-        return json({ error: `Failed to delete carrier service: HTTP ${delResponse.status}` }, { status: 400 });
+      if (data.data?.carrierServiceDelete?.userErrors?.length > 0) {
+        return json({ error: data.data.carrierServiceDelete.userErrors[0].message }, { status: 400 });
       }
 
       await updateAppSettings(shopDomain, {
