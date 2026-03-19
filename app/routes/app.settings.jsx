@@ -66,7 +66,7 @@ export async function action({ request }) {
         mutation {
           carrierServiceCreate(input: {
             name: "${serviceName.replace(/"/g, '\\"')}",
-            callbackUrl: "${callbackUrl}"
+            callbackUrl: "${callbackUrl}", supportsServiceDiscovery: true
           }) {
             carrierService {
               id
