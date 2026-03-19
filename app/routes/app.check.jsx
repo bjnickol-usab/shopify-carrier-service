@@ -6,7 +6,7 @@ import { Page, Card, BlockStack, Text } from "@shopify/polaris";
 
 const CARRIER_SERVICES_QUERY = `
   query {
-    deliveryCarrierServices(first: 10) {
+    carrierServices(first: 10) {
       edges {
         node {
           id
@@ -25,7 +25,7 @@ export async function loader({ request }) {
     const settings = await getAppSettings(session.shop);
     const response = await admin.graphql(CARRIER_SERVICES_QUERY);
     const data = await response.json();
-    const services = data.data?.deliveryCarrierServices?.edges?.map((e) => e.node) || [];
+    const services = data.data?.carrierServices?.edges?.map((e) => e.node) || [];
     return json({
       shopDomain: session.shop,
       dbCarrierId: settings.carrier_service_id,
