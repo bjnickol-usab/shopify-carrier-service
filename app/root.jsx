@@ -7,16 +7,6 @@ import {
   useRouteError,
   isRouteErrorResponse,
 } from "@remix-run/react";
-import { json } from "@remix-run/node";
-import { addDocumentResponseHeaders } from "./shopify.server.js";
-
-export async function loader({ request }) {
-  return json({});
-}
-
-export function headers({ loaderHeaders }) {
-  return loaderHeaders;
-}
 
 export default function App() {
   return (
