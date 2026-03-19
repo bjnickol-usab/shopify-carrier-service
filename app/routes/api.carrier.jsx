@@ -20,11 +20,15 @@ export async function loader() {
 }
 
 export async function action({ request }) {
+  console.log("[carrier] Received request:", request.method, request.url);
+  console.log("[carrier] Headers:", JSON.stringify(Object.fromEntries(request.headers.entries())));
+
   if (request.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
   const rawBody = await request.text();
+  console.log("[carrier] Raw body:", rawBody.substring(0, 500));
 
   // Allow requests with a test token to bypass HMAC for development testing
   const testToken = request.headers.get("X-Test-Token");
