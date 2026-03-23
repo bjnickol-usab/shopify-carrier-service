@@ -135,3 +135,34 @@ CREATE POLICY "service_role_sessions" ON shopify_sessions FOR ALL USING (true) W
 CREATE POLICY "service_role_shipping_rates" ON shipping_rates FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "service_role_surcharge_rules" ON surcharge_rules FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "service_role_app_settings" ON app_settings FOR ALL USING (true) WITH CHECK (true);
+
+-- ============================================================
+-- Rate Tiers table
+-- Tiered pricing per shipping rate based on order subtotal.
+-- Tiers are evaluated in order: the first matching tier wins.
+-- min_order_cents is inclusive, max_order_cents is exclusive
+-- (null max_order_cents means "and above").
+-- ============================================================
+CREATE TABLE IF NOT EXISTS rate_tiers (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  shipping_rate_id UUID NOT NULL REFERENCES shipping_rates(id) ON DELETE CASCADE,
+  shop_domain TEXT NOT NULL,
+  min_order_cents INTEGER NOT NULL DEFAULT 0,
+  max_order_cents INTEGER,
+  price_cents INTEGER NOT NULL DEFAULT 0,
+  sort_order INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rate_tiers_rate ON rate_tiers(shipping_rate_id);
+CREATE INDEX IF NOT EXISTS idx_rate_tiers_shop ON rate_tiers(shop_domain);
+
+DROP TRIGGER IF EXISTS update_rate_tiers_updated_at ON rate_tiers;
+CREATE TRIGGER update_rate_tiers_updated_at
+  BEFORE UPDATE ON rate_tiers
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+ALTER TABLE rate_tiers ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "service_role_rate_tiers" ON rate_tiers;
+CREATE POLICY "service_role_rate_tiers" ON rate_tiers FOR ALL USING (true) WITH CHECK (true);

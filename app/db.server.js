@@ -267,6 +267,61 @@ export async function toggleSurchargeRule(shopDomain, ruleId, isActive) {
   return data;
 }
 
+
+// ============================================================
+// Rate Tiers CRUD
+// ============================================================
+export async function getRateTiers(shopDomain, shippingRateId) {
+  const { data, error } = await supabase
+    .from("rate_tiers")
+    .select("*")
+    .eq("shop_domain", shopDomain)
+    .eq("shipping_rate_id", shippingRateId)
+    .order("min_order_cents", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function getAllRateTiers(shopDomain) {
+  const { data, error } = await supabase
+    .from("rate_tiers")
+    .select("*")
+    .eq("shop_domain", shopDomain)
+    .order("min_order_cents", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function saveRateTiers(shopDomain, shippingRateId, tiers) {
+  // Delete existing tiers for this rate then insert fresh
+  const { error: deleteError } = await supabase
+    .from("rate_tiers")
+    .delete()
+    .eq("shipping_rate_id", shippingRateId)
+    .eq("shop_domain", shopDomain);
+  if (deleteError) throw deleteError;
+
+  if (!tiers || tiers.length === 0) return [];
+
+  const rows = tiers.map((t, i) => ({
+    shipping_rate_id: shippingRateId,
+    shop_domain: shopDomain,
+    min_order_cents: Math.round(parseFloat(t.min_order) * 100),
+    max_order_cents: t.max_order !== "" && t.max_order !== null && t.max_order !== undefined
+      ? Math.round(parseFloat(t.max_order) * 100)
+      : null,
+    price_cents: Math.round(parseFloat(t.price) * 100),
+    sort_order: i,
+  }));
+
+  const { data, error } = await supabase
+    .from("rate_tiers")
+    .insert(rows)
+    .select();
+  if (error) throw error;
+  return data;
+}
+
 // ============================================================
 // Carrier Service Rate Calculation
 // Called by the carrier callback with items from Shopify
@@ -275,9 +330,10 @@ export async function calculateShippingRates(shopDomain, cartItems) {
   const settings = await getAppSettings(shopDomain);
   if (!settings.app_enabled) return [];
 
-  const [baseRates, surchargeRules] = await Promise.all([
+  const [baseRates, surchargeRules, allTiers] = await Promise.all([
     getShippingRates(shopDomain),
     getSurchargeRules(shopDomain),
+    getAllRateTiers(shopDomain),
   ]);
 
   const activeRates = baseRates.filter((r) => r.is_active);
@@ -285,12 +341,19 @@ export async function calculateShippingRates(shopDomain, cartItems) {
 
   if (activeRates.length === 0) return [];
 
+  // Calculate order subtotal in cents (item.price is already in cents from Shopify)
+  const subtotalCents = cartItems.reduce(
+    (sum, item) => sum + item.price * item.quantity,
+    0
+  );
+
+  console.log(`[calculateShippingRates] subtotal: ${subtotalCents} cents, items: ${cartItems.length}`);
+
   // Calculate total surcharge for this cart
   let totalSurchargeCents = 0;
 
   for (const rule of activeRules) {
     for (const item of cartItems) {
-      // product_id from Shopify carrier callback is a numeric ID (not GID)
       const itemProductId = String(item.product_id);
       const ruleId = rule.shopify_id
         .replace("gid://shopify/Product/", "")
@@ -298,25 +361,71 @@ export async function calculateShippingRates(shopDomain, cartItems) {
 
       const matches = rule.rule_type === "product"
         ? itemProductId === ruleId
-        : false; // collection matching handled separately below
+        : false;
 
       if (matches) {
         const quantity = rule.applies_per === "item" ? item.quantity : 1;
-        const baseForPct = item.price * item.quantity; // item.price is in cents
+        const baseForPct = item.price * item.quantity;
 
         const surcharge = rule.surcharge_type === "percentage"
           ? Math.round((baseForPct * rule.surcharge_amount) / 100)
           : Math.round(parseFloat(rule.surcharge_amount) * 100) * quantity;
 
         totalSurchargeCents += surcharge;
-        break; // one rule per item max
+        break;
       }
     }
   }
 
-  // Apply surcharge to all active base rates
+  // Build a map of tiers per rate ID for quick lookup
+  const tiersByRate = {};
+  for (const tier of allTiers) {
+    if (!tiersByRate[tier.shipping_rate_id]) {
+      tiersByRate[tier.shipping_rate_id] = [];
+    }
+    tiersByRate[tier.shipping_rate_id].push(tier);
+  }
+
   return activeRates.map((rate) => {
-    const finalCents = rate.base_price_cents + totalSurchargeCents;
+    const tiers = tiersByRate[rate.id] || [];
+
+    let basePriceCents = rate.base_price_cents;
+
+    if (tiers.length > 0) {
+      // Sort tiers by min_order_cents ascending
+      const sorted = [...tiers].sort((a, b) => a.min_order_cents - b.min_order_cents);
+
+      // Find the matching tier — last tier whose min <= subtotal
+      let matchedTier = null;
+      for (const tier of sorted) {
+        if (subtotalCents >= tier.min_order_cents) {
+          if (tier.max_order_cents === null || subtotalCents < tier.max_order_cents) {
+            matchedTier = tier;
+            break; // tiers are sorted, first match wins
+          }
+        }
+      }
+
+      // Walk through sorted tiers to find the right one
+      matchedTier = null;
+      for (const tier of sorted) {
+        const aboveMin = subtotalCents >= tier.min_order_cents;
+        const belowMax = tier.max_order_cents === null || subtotalCents < tier.max_order_cents;
+        if (aboveMin && belowMax) {
+          matchedTier = tier;
+        }
+      }
+
+      if (matchedTier !== null) {
+        basePriceCents = matchedTier.price_cents;
+        console.log(`[calculateShippingRates] rate "${rate.name}" matched tier: $${basePriceCents / 100}`);
+      } else {
+        console.log(`[calculateShippingRates] rate "${rate.name}" no tier matched, using base: $${basePriceCents / 100}`);
+      }
+    }
+
+    const finalCents = basePriceCents + totalSurchargeCents;
+
     const result = {
       service_name: rate.name,
       service_code: rate.service_code,
