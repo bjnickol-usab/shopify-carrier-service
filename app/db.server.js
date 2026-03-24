@@ -351,10 +351,15 @@ export async function calculateShippingRates(shopDomain, cartItems) {
 
   // Calculate total surcharge for this cart
   let totalSurchargeCents = 0;
+  const appliedRuleIds = new Set();
 
-  for (const rule of activeRules) {
-    for (const item of cartItems) {
-      const itemProductId = String(item.product_id);
+  console.log(`[surcharge] checking ${cartItems.length} items against ${activeRules.length} rules`);
+
+  for (const item of cartItems) {
+    const itemProductId = String(item.product_id);
+    console.log(`[surcharge] item product_id: ${itemProductId}, qty: ${item.quantity}, price: ${item.price}`);
+
+    for (const rule of activeRules) {
       const ruleId = rule.shopify_id
         .replace("gid://shopify/Product/", "")
         .replace("gid://shopify/Collection/", "");
@@ -363,19 +368,26 @@ export async function calculateShippingRates(shopDomain, cartItems) {
         ? itemProductId === ruleId
         : false;
 
+      console.log(`[surcharge] rule "${ruleId}" (${rule.rule_type}) matches: ${matches}`);
+
       if (matches) {
+        if (rule.applies_per === "order" && appliedRuleIds.has(rule.id)) {
+          console.log(`[surcharge] skipping rule ${rule.id} - already applied per-order`);
+          continue;
+        }
         const quantity = rule.applies_per === "item" ? item.quantity : 1;
         const baseForPct = item.price * item.quantity;
-
         const surcharge = rule.surcharge_type === "percentage"
           ? Math.round((baseForPct * rule.surcharge_amount) / 100)
           : Math.round(parseFloat(rule.surcharge_amount) * 100) * quantity;
-
         totalSurchargeCents += surcharge;
-        break;
+        appliedRuleIds.add(rule.id);
+        console.log(`[surcharge] applied "${rule.surcharge_label}": +${surcharge} cents`);
       }
     }
   }
+
+  console.log(`[surcharge] total: ${totalSurchargeCents} cents`);
 
   // Build a map of tiers per rate ID for quick lookup
   const tiersByRate = {};
